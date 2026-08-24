@@ -1,0 +1,14 @@
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/saramin/
+data/raw/saramin/*
+!data/raw/saramin/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+.env
+CLAUDE.md
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
