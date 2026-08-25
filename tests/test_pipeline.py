@@ -14,6 +14,13 @@ def _write_fixtures(raw_dir):
         encoding="utf-8",
     )
 
+    # 시군구 중심좌표 원본 (gist 데이터와 동일한 "시도/시군구" 키 구조).
+    (raw_dir / "sigungu_centroid_coords_raw.json").write_text(
+        '{"서울특별시/종로구": {"lat": "37.5", "long": "126.98"}, '
+        '"부산광역시/중구": {"lat": "35.1", "long": "129.03"}}',
+        encoding="utf-8",
+    )
+
     # ltc_facilities_general.csv: 실제 원본과 동일한 컬럼명(장기요양기관코드, 시도 시군구 법정동명).
     (raw_dir / "ltc_facilities_general.csv").write_text(
         "장기요양기관코드,시도 시군구 법정동명\n"
@@ -60,6 +67,8 @@ def test_run_pipeline_produces_gap_index_csv(tmp_path):
     assert seoul_jongno["elderly_population"] == 8000
     assert seoul_jongno["capacity_per_1000_elderly"] == 10.0
     assert seoul_jongno["region_name"] == "서울특별시 종로구"
+    assert seoul_jongno["lat"] == 37.5
+    assert seoul_jongno["lon"] == 126.98
 
     # 부산 중구는 시설 데이터가 전혀 없는 지역 -> capacity 0으로 채워져야 함.
     busan_jung = result[result["region_code"] == "26110"].iloc[0]
