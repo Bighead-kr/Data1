@@ -31,3 +31,19 @@ def test_compute_gap_index_handles_region_with_zero_facilities():
 
     assert row_b["total_capacity"] == 0
     assert row_b["capacity_per_1000_elderly"] == 0.0
+
+def test_compute_gap_index_handles_region_with_zero_elderly_population():
+    facilities_df = pd.DataFrame(
+        {"region_code": ["A", "B"], "capacity": [100, 200]}
+    )
+    population_df = pd.DataFrame(
+        {"region_code": ["A", "B"], "elderly_population": [10000, 0]}
+    )
+
+    result = compute_gap_index(facilities_df, population_df)
+    row_b = result[result["region_code"] == "B"].iloc[0]
+
+    assert row_b["total_capacity"] == 200
+    assert row_b["capacity_per_1000_elderly"] == 0.0
+    assert not pd.isna(result["gap_rank"]).any()
+    assert result["gap_rank"].dtype == int
