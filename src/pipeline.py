@@ -2,14 +2,16 @@ import os
 
 import pandas as pd
 
-from src.clean.region_mapper import build_region_lookup
+from src.clean.region_mapper import build_region_lookup, build_region_name_lookup
 from src.clean.clean_facilities import clean_facilities
 from src.clean.clean_population import clean_population
 from src.analyze.gap_index import compute_gap_index
 
 
 def run_pipeline(raw_dir: str, processed_dir: str) -> str:
-    region_lookup = build_region_lookup(os.path.join(raw_dir, "region_codes_raw.csv"))
+    region_codes_path = os.path.join(raw_dir, "region_codes_raw.csv")
+    region_lookup = build_region_lookup(region_codes_path)
+    region_names = build_region_name_lookup(region_codes_path)
     general = pd.read_csv(os.path.join(raw_dir, "ltc_facilities_general.csv"), dtype=str)
     capacity = pd.read_csv(os.path.join(raw_dir, "ltc_facilities_capacity.csv"), dtype=str)
     pop_raw = pd.read_csv(
@@ -21,6 +23,8 @@ def run_pipeline(raw_dir: str, processed_dir: str) -> str:
     population_df = clean_population(pop_raw, region_lookup)
 
     result = compute_gap_index(facilities_df, population_df)
+    # Tableau 지도/툴팁에서 코드 대신 지역명을 바로 보여주기 위해 붙인다.
+    result.insert(1, "region_name", result["region_code"].map(region_names))
 
     output_path = os.path.join(processed_dir, "gap_index.csv")
     result.to_csv(output_path, index=False)

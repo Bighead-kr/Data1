@@ -59,6 +59,7 @@ def test_run_pipeline_produces_gap_index_csv(tmp_path):
     assert seoul_jongno["total_capacity"] == 80
     assert seoul_jongno["elderly_population"] == 8000
     assert seoul_jongno["capacity_per_1000_elderly"] == 10.0
+    assert seoul_jongno["region_name"] == "서울특별시 종로구"
 
     # 부산 중구는 시설 데이터가 전혀 없는 지역 -> capacity 0으로 채워져야 함.
     busan_jung = result[result["region_code"] == "26110"].iloc[0]
