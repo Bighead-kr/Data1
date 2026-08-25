@@ -8,7 +8,7 @@
 
 **Architecture:** `collect → clean → analyze → visualize` 4단계 파이프라인. 각 단계는 `data/raw/` → `data/processed/` 사이를 이동하는 파일 기반 파이프라인이며, 단계 간 인터페이스는 CSV 스키마로 고정한다. 지표 계산 로직(수급 갭)은 순수 함수로 분리해 pytest로 검증한다.
 
-**Tech Stack:** Python 3 (pandas, requests), SQLite 또는 CSV, pytest, Tableau Public/Desktop
+**Tech Stack:** Python 3 (pandas, openpyxl), CSV 파일 기반 파이프라인, pytest, Tableau Public/Desktop
 
 **Spec:** `CLAUDE.md` (프로젝트 개요·데이터 소스·리스크), Notion 페이지(진행 로그)
 
@@ -16,8 +16,8 @@
 
 | 일자 | 태스크 | 비고 |
 |---|---|---|
-| Day 1 (08-25, 오늘) | Task 1: 데이터 소스 확보 | 계정 가입·API 신청은 본인 로그인이 필요해 직접 진행. 승인 대기가 걸리면 이후 일정이 밀릴 수 있음 |
-| Day 2 (08-26) | Task 2: 수집 파싱 | 승인 대기 중이어도 raw 파일 샘플만 있으면 착수 가능 |
+| Day 1 (08-25, 오늘) | Task 1: 데이터 소스 확보 | [완료] 원본 파일 6종 수동 확보 + CSV 변환까지 끝남. API 신청 절차 자체가 불필요해져 일정이 하루 앞당겨짐 |
+| Day 2 (08-26) | Task 2: 원본 로더/스키마 검증 | API 파싱이 아니라 로컬 CSV 스키마 검증으로 범위 축소됨 |
 | Day 3 (08-27) | Task 3: 지역코드 매핑 | |
 | Day 4 (08-28) | Task 6: 실데이터 정제 (raw→clean) | 이 시점까지 실제 raw 컬럼명을 확인해둘 것 |
 | Day 5 (08-29) | Task 4: 수급 갭 지표 계산 | |
@@ -33,157 +33,212 @@
 - 원본 데이터는 `data/raw/`, 정제본은 `data/processed/`에 저장하고 둘 다 `.gitignore`로 git 추적 제외 (폴더는 `.gitkeep`으로 유지)
 - API 키/인증 정보는 `.env`에만 저장, `.env.example`만 커밋
 - 공공데이터 사용 시 데이터셋별 공공누리 라이선스 유형을 확인하고 출처를 리포트에 명시
-- 지역 단위는 시군구(시군구 코드 5자리, 통계청 행정구역코드 기준)로 통일 — 이후 모든 병합 키는 이 코드를 사용
+- **[2026-08-25 확정] 지역 결합 키는 숫자 코드가 아니라 "시도명+시군구명" 텍스트 정규화 키를 사용한다.** 건강보험공단 파일의 `시군구코드`(예: 종로구=110)와 통계청 코드표의 5자리 코드(종로구=11010)가 서로 다른 체계라 숫자 join이 틀린 지역에 매칭된다. 최종 산출물의 `region_code` 컬럼값 자체는 통계청 5자리 코드를 쓰되, 그 코드를 찾는 매칭 과정은 반드시 이름 기반으로 한다.
+- **[알려진 리스크] 광주/전남 통합 이슈:** 인구 통계 원본에 "전남광주통합특별시"라는 명칭이 등장하는데, 통계청 행정구역 코드표(`region_codes_raw.csv`, 2024년 기준)에는 이 명칭이 없을 수 있다. Task 6에서 이름 매칭이 안 되는 지역이 있으면 누락 처리하지 말고 반드시 원인을 확인하고 수동 매핑 예외 처리를 추가할 것.
 
 ---
 
-### Task 1: 데이터 소스 확보 — 공공데이터포털/KOSIS 계정 및 원천 파일 확보
+### Task 1: 데이터 소스 확보 — 원천 파일 확보 및 CSV 정리 [완료 2026-08-25]
 
 **Files:**
-- Create: `.env.example`
+- Create: `.gitignore`
 - Create: `data/raw/.gitkeep`
 - Create: `data/processed/.gitkeep`
-- Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: 아래 4개 원천 파일이 `data/raw/`에 존재
-  - `data/raw/ltc_facilities_raw.csv` (국민건강보험공단 장기요양기관 시설별 현황)
-  - `data/raw/elderly_population_raw.csv` (통계청 KOSIS 시군구별 65세 이상 인구)
-  - `data/raw/ltc_grades_raw.csv` (복지로 장기요양기관 평가등급, 있으면)
-  - `data/raw/region_codes.csv` (통계청 행정구역코드 마스터)
+- Produces: 아래 6개 원천 CSV가 `data/raw/`에 존재 (API 신청 없이 수동 다운로드 + xlsx→CSV 변환으로 확보 완료)
+  - `data/raw/ltc_facilities_general.csv` (30,595행) — 컬럼: `장기요양기관코드, 장기요양기관이름, 우편번호, 시도코드, 시군구코드, 법정동코드, 시도 시군구 법정동명, 지정일자, 설치신고일자, 기관별 상세주소`
+  - `data/raw/ltc_facilities_capacity.csv` (43,581행) — 컬럼: `장기요양기관코드, 기관유형코드, 기관유형명, 정원`
+  - `data/raw/ltc_facilities_staffing.csv` (49,162행) — 이번 스코프(수급 갭 지표)에서는 미사용, 심화 분석용으로 보관
+  - `data/raw/ltc_facility_type_codes.csv` (35행) — 컬럼: `코드, 이름` (A01~C06 등 기관유형 코드표)
+  - `data/raw/region_codes_raw.csv` (3,841행) — 컬럼: `code, name`, 2자리(시도)/5자리(시군구)/8자리(읍면동) 계층형 통계청 행정구역코드
+  - `data/raw/인구총조사_고령인구비율_시도_시_군_구__20260825134933.csv` (248행) — 컬럼: `행정구역별(1)(시도), 행정구역별(2)(시군구), 행정구역별(3), 2025(고령인구비율%), 2025.1(65세이상인구), 2025.2(전체인구)`. **주의: 1행(index 0)은 진짜 데이터가 아니라 두 번째 헤더 행이 데이터처럼 읽힌 것 — 반드시 스킵할 것**
 
-- [ ] **Step 1: 공공데이터포털(data.go.kr) 계정으로 아래 데이터셋 검색·다운로드/API 신청**
-  - 국민건강보험공단_장기요양기관 시설별 현황
-  - 없으면 노인장기요양보험 홈페이지(longtermcare.or.kr) 정보공개 메뉴에서 대체 파일 확보
+- [x] **Step 1: 국민건강보험공단 장기요양기관 시설별 현황 xlsx 확보 (수동 다운로드, 사용자 제공)**
 
-- [ ] **Step 2: KOSIS(kosis.kr)에서 시군구별 65세 이상 인구 통계 다운로드**
-  - KOSIS > 인구총조사 또는 주민등록인구현황 > 시군구별, 최신 연도 CSV 다운로드
+- [x] **Step 2: 통계청 65세 이상 인구 CSV(KOSIS) 확보 (수동 다운로드, 사용자 제공)**
 
-- [ ] **Step 3: 통계청 행정구역코드(시군구 5자리) 마스터 파일 확보**
-  - SGIS 또는 KOSIS 코드표에서 다운로드, 시도명·시군구명·코드 컬럼 포함 확인
+- [x] **Step 3: 통계청 행정구역코드 마스터 xlsx 확보 (수동 다운로드, 사용자 제공)**
 
-- [ ] **Step 4: 위 파일들을 `data/raw/`에 저장하고 각 파일의 행 수·컬럼을 확인**
+- [x] **Step 4: xlsx 파일들을 시트별 CSV로 변환 (openpyxl 설치 후 pandas로 변환)**
 
-  Run: `python -c "import pandas as pd; [print(f, pd.read_csv(f, nrows=5).columns.tolist()) for f in ['data/raw/ltc_facilities_raw.csv','data/raw/elderly_population_raw.csv','data/raw/region_codes.csv']]"`
+  실행한 변환:
+  ```python
+  import pandas as pd
+  xl = pd.ExcelFile('data/raw/국민건강보험공단_장기요양기관 시설별 현황_20260610.xlsx')
+  name_map = {
+      '일반현황': 'ltc_facilities_general.csv',
+      '입소인원': 'ltc_facilities_capacity.csv',
+      '인력현황': 'ltc_facilities_staffing.csv',
+      '기관유형코드 정의': 'ltc_facility_type_codes.csv',
+  }
+  for sheet, fname in name_map.items():
+      xl.parse(sheet).to_csv(f'data/raw/{fname}', index=False, encoding='utf-8-sig')
+  ```
+  결과 확인: 5개 CSV 모두 정상 생성, 행 수는 위 Interfaces 목록과 일치
 
-  Expected: 3개 파일 모두 에러 없이 컬럼 목록 출력 (인코딩은 `encoding='cp949'` 필요할 수 있음)
+- [x] **Step 5: 원본 xlsx 삭제, CSV만 유지**
 
-- [ ] **Step 5: `.env.example`, `.gitignore` 작성 및 커밋**
+  Run: `ls data/raw/`
+  Expected: `.xlsx` 파일 없이 CSV 5종 + `.gitkeep`만 존재 — 확인 완료
+
+- [ ] **Step 6: `.gitignore` 작성 및 커밋**
 
 ```
-# .env.example
-DATA_GO_KR_API_KEY=
+# .gitignore (추가)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+.env
 ```
 
 ```bash
-git add .env.example .gitignore data/raw/.gitkeep data/processed/.gitkeep
-git commit -m "chore: set up data directories and env template"
+git add .gitignore data/raw/.gitkeep data/processed/.gitkeep
+git commit -m "chore: set up data directories and gitignore for raw/processed data"
 ```
 
 ---
 
-### Task 2: 수집 스크립트 — API 원본을 표준 CSV로 저장
+### Task 2: 원본 CSV 로더 및 스키마 검증 — API 호출 없이 파일 기반 수집 계층
 
 **Files:**
-- Create: `src/collect/fetch_ltc_facilities.py`
-- Test: `tests/collect/test_fetch_ltc_facilities.py`
+- Create: `src/collect/load_raw.py`
+- Test: `tests/collect/test_load_raw.py`
 
 **Interfaces:**
-- Consumes: `DATA_GO_KR_API_KEY` (환경변수), Task 1의 `data/raw/ltc_facilities_raw.csv`가 이미 수동 다운로드된 경우 이 스크립트는 파일 검증만 수행
-- Produces: `parse_facility_rows(raw_json: dict) -> list[dict]` — 각 dict는 `{"region_code": str, "facility_type": str, "capacity": int, "current": int}` 키를 가짐
+- Consumes: Task 1의 `data/raw/*.csv` 5종
+- Produces:
+  - `REQUIRED_COLUMNS: dict[str, list[str]]` — 파일명 → 필수 컬럼 목록 상수
+  - `load_and_validate(path: str, required_columns: list[str]) -> pd.DataFrame` — 필수 컬럼이 없으면 `ValueError` 발생, 있으면 그대로 반환
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 ```python
-# tests/collect/test_fetch_ltc_facilities.py
-from src.collect.fetch_ltc_facilities import parse_facility_rows
+# tests/collect/test_load_raw.py
+import pandas as pd
+import pytest
+from src.collect.load_raw import load_and_validate
 
-def test_parse_facility_rows_extracts_required_fields():
-    raw_json = {
-        "response": {
-            "body": {
-                "items": [
-                    {"admCode": "11110", "svcTp": "노인요양시설", "cap": "50", "curNum": "42"}
-                ]
-            }
-        }
-    }
-    result = parse_facility_rows(raw_json)
-    assert result == [
-        {"region_code": "11110", "facility_type": "노인요양시설", "capacity": 50, "current": 42}
-    ]
+def test_load_and_validate_returns_dataframe_when_columns_present(tmp_path):
+    csv_path = tmp_path / "sample.csv"
+    pd.DataFrame({"a": [1], "b": [2]}).to_csv(csv_path, index=False)
 
-def test_parse_facility_rows_handles_empty_items():
-    raw_json = {"response": {"body": {"items": []}}}
-    assert parse_facility_rows(raw_json) == []
+    result = load_and_validate(str(csv_path), required_columns=["a", "b"])
+
+    assert list(result.columns) == ["a", "b"]
+    assert len(result) == 1
+
+def test_load_and_validate_raises_when_required_column_missing(tmp_path):
+    csv_path = tmp_path / "sample.csv"
+    pd.DataFrame({"a": [1]}).to_csv(csv_path, index=False)
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        load_and_validate(str(csv_path), required_columns=["a", "b"])
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
 
-  Run: `pytest tests/collect/test_fetch_ltc_facilities.py -v`
-  Expected: FAIL with `ModuleNotFoundError` or `ImportError` (함수 미정의)
+  Run: `pytest tests/collect/test_load_raw.py -v`
+  Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: 최소 구현 작성**
 
 ```python
-# src/collect/fetch_ltc_facilities.py
-def parse_facility_rows(raw_json: dict) -> list[dict]:
-    items = raw_json.get("response", {}).get("body", {}).get("items", [])
-    return [
-        {
-            "region_code": item["admCode"],
-            "facility_type": item["svcTp"],
-            "capacity": int(item["cap"]),
-            "current": int(item["curNum"]),
-        }
-        for item in items
-    ]
-```
+# src/collect/load_raw.py
+import pandas as pd
 
-  실제 API 응답 필드명(`admCode`, `svcTp`, `cap`, `curNum` 등)은 Task 1에서 받은 원본 파일/문서를 열어 실제 키 이름으로 교체할 것 — 위 이름은 플레이스홀더가 아니라 최초 추정치이며, 실데이터 확인 후 이 단계에서 바로 수정한다.
+REQUIRED_COLUMNS = {
+    "ltc_facilities_general.csv": [
+        "장기요양기관코드", "시도 시군구 법정동명",
+    ],
+    "ltc_facilities_capacity.csv": [
+        "장기요양기관코드", "기관유형코드", "정원",
+    ],
+    "region_codes_raw.csv": ["code", "name"],
+}
+
+def load_and_validate(path: str, required_columns: list[str]) -> pd.DataFrame:
+    df = pd.read_csv(path, dtype=str)
+    missing = [c for c in required_columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"missing required columns: {missing}")
+    return df
+```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
-  Run: `pytest tests/collect/test_fetch_ltc_facilities.py -v`
+  Run: `pytest tests/collect/test_load_raw.py -v`
   Expected: PASS (2 passed)
 
-- [ ] **Step 5: 커밋**
+- [ ] **Step 5: 실제 raw 파일에 대해 수동으로 스모크 테스트**
+
+  Run:
+  ```bash
+  python -c "
+  from src.collect.load_raw import load_and_validate, REQUIRED_COLUMNS
+  for fname, cols in REQUIRED_COLUMNS.items():
+      df = load_and_validate(f'data/raw/{fname}', cols)
+      print(fname, df.shape)
+  "
+  ```
+  Expected: 3개 파일 모두 에러 없이 `(행수, 컬럼수)` 출력
+
+- [ ] **Step 6: 커밋**
 
 ```bash
-git add src/collect/fetch_ltc_facilities.py tests/collect/test_fetch_ltc_facilities.py
-git commit -m "feat: parse LTC facility API response into flat rows"
+git add src/collect/load_raw.py tests/collect/test_load_raw.py
+git commit -m "feat: add raw CSV loader with required-column validation"
 ```
 
 ---
 
-### Task 3: 지역코드 정규화 — 시군구명을 5자리 코드로 매핑
+### Task 3: 지역코드 정규화 — "시도명+시군구명" 텍스트 키를 5자리 코드로 매핑
+
+**배경:** `region_codes_raw.csv`는 계층형 목록이라 5자리(시군구) 행에는 시군구명만 있고 시도명은 없다 (예: `11010, 종로구`). 시도명은 그 상위 2자리 행(`11, 서울특별시`)에만 있다. 코드의 앞 2자리가 부모 시도 코드와 같다는 성질을 이용해 "시도명+시군구명" 결합 키를 만들어야, 여러 시도에 동명 시군구가 있는 경우(중구, 서구 등)도 구분할 수 있다.
 
 **Files:**
 - Create: `src/clean/region_mapper.py`
 - Test: `tests/clean/test_region_mapper.py`
 
 **Interfaces:**
-- Consumes: `data/raw/region_codes.csv` (컬럼: `region_name`, `region_code`)
-- Produces: `build_region_lookup(region_codes_path: str) -> dict[str, str]` (지역명 → 코드), `normalize_region_name(name: str) -> str` (공백/괄호 제거 등 표준화)
+- Consumes: `data/raw/region_codes_raw.csv` (컬럼: `code`, `name`, 2/5/8자리 계층형)
+- Produces:
+  - `normalize_region_name(name: str) -> str` — 공백/괄호 제거
+  - `combine_region_key(sido: str, sigungu: str) -> str` — 정규화된 시도명+시군구명 결합 키
+  - `build_region_lookup(region_codes_path: str) -> dict[str, str]` — 결합 키 → 5자리 코드
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 ```python
 # tests/clean/test_region_mapper.py
 import pandas as pd
-from src.clean.region_mapper import normalize_region_name, build_region_lookup
+from src.clean.region_mapper import (
+    normalize_region_name,
+    combine_region_key,
+    build_region_lookup,
+)
 
 def test_normalize_region_name_strips_whitespace_and_parens():
-    assert normalize_region_name(" 수원시 장안구 (경기) ") == "수원시장안구"
+    assert normalize_region_name(" 장안구 (경기) ") == "장안구"
 
-def test_build_region_lookup_maps_name_to_code(tmp_path):
-    csv_path = tmp_path / "region_codes.csv"
+def test_combine_region_key_joins_normalized_parts():
+    assert combine_region_key("경기도", " 수원시 장안구 ") == "경기도수원시장안구"
+
+def test_build_region_lookup_uses_parent_sido_code_prefix(tmp_path):
+    csv_path = tmp_path / "region_codes_raw.csv"
     pd.DataFrame(
-        {"region_name": ["수원시 장안구"], "region_code": ["41111"]}
+        {
+            "code": ["11", "11010", "11020", "41", "41111"],
+            "name": ["서울특별시", "종로구", "중구", "경기도", "수원시장안구"],
+        }
     ).to_csv(csv_path, index=False)
 
     lookup = build_region_lookup(str(csv_path))
-    assert lookup["수원시장안구"] == "41111"
+
+    assert lookup["서울특별시종로구"] == "11010"
+    assert lookup["서울특별시중구"] == "11020"
+    assert lookup["경기도수원시장안구"] == "41111"
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -199,27 +254,51 @@ import re
 import pandas as pd
 
 def normalize_region_name(name: str) -> str:
-    name = re.sub(r"\(.*?\)", "", name)
+    name = re.sub(r"\(.*?\)", "", str(name))
     return re.sub(r"\s+", "", name).strip()
+
+def combine_region_key(sido: str, sigungu: str) -> str:
+    return normalize_region_name(sido) + normalize_region_name(sigungu)
 
 def build_region_lookup(region_codes_path: str) -> dict[str, str]:
     df = pd.read_csv(region_codes_path, dtype=str)
-    return {
-        normalize_region_name(row["region_name"]): row["region_code"]
-        for _, row in df.iterrows()
-    }
+    df["code_len"] = df["code"].str.len()
+
+    sido_names = dict(zip(df.loc[df["code_len"] == 2, "code"], df.loc[df["code_len"] == 2, "name"]))
+
+    lookup = {}
+    for _, row in df.loc[df["code_len"] == 5].iterrows():
+        sido_code = row["code"][:2]
+        sido_name = sido_names.get(sido_code)
+        if sido_name is None:
+            continue
+        key = combine_region_key(sido_name, row["name"])
+        lookup[key] = row["code"]
+    return lookup
 ```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
   Run: `pytest tests/clean/test_region_mapper.py -v`
-  Expected: PASS (2 passed)
+  Expected: PASS (3 passed)
 
-- [ ] **Step 5: 커밋**
+- [ ] **Step 5: 실제 `region_codes_raw.csv`로 스모크 테스트 — 264개 시군구 전부 매핑되는지 확인**
+
+  Run:
+  ```bash
+  python -c "
+  from src.clean.region_mapper import build_region_lookup
+  lookup = build_region_lookup('data/raw/region_codes_raw.csv')
+  print('mapped regions:', len(lookup))
+  "
+  ```
+  Expected: `mapped regions: 264` (Global Constraints의 5자리 코드 개수와 일치해야 함 — 다르면 원인을 조사할 것, 세종특별자치시처럼 5자리 코드 없이 2자리로만 존재하는 특수 케이스가 있을 수 있음)
+
+- [ ] **Step 6: 커밋**
 
 ```bash
 git add src/clean/region_mapper.py tests/clean/test_region_mapper.py
-git commit -m "feat: add region name normalization and code lookup"
+git commit -m "feat: build sido+sigungu combined key to 5-digit region code lookup"
 ```
 
 ---
@@ -318,7 +397,7 @@ git commit -m "feat: compute per-region LTC capacity gap index"
 - Test: `tests/test_pipeline.py`
 
 **Interfaces:**
-- Consumes: Task 2의 `parse_facility_rows`, Task 3의 `build_region_lookup`/`normalize_region_name`, Task 4의 `compute_gap_index`
+- Consumes: Task 6의 `clean_facilities`/`clean_population`, Task 4의 `compute_gap_index`
 - Produces: `run_pipeline(raw_dir: str, processed_dir: str) -> str` — `data/processed/gap_index.csv` 경로를 반환
 
 - [ ] **Step 1: 실패하는 테스트 작성 (임시 디렉토리에 최소 fixture 파일 생성 후 엔드투엔드 검증)**
@@ -377,7 +456,36 @@ def run_pipeline(raw_dir: str, processed_dir: str) -> str:
     return output_path
 ```
 
-  참고: 이 태스크에서는 `ltc_facilities_clean.csv`, `elderly_population_clean.csv`가 이미 지역코드로 정규화되어 있다고 가정한다. 원본 raw 파일(Task 1)을 이 형태로 정제하는 스크립트는 Task 3의 `region_mapper`를 사용해 별도로 작성해야 하며, 실제 원본 컬럼명을 확인한 뒤(Task 1 Step 4 결과 참고) `src/clean/` 아래에 `clean_facilities.py`, `clean_population.py`로 추가한다 — 원본 스키마를 봐야 정확한 컬럼 매핑을 정할 수 있으므로 이 태스크에서는 정규화 이후 형태만 계약으로 고정한다.
+  참고: 이 태스크의 테스트는 이미 지역코드로 정규화된 `ltc_facilities_clean.csv`, `elderly_population_clean.csv` fixture로 검증한다. 실제 raw → 이 형태로의 정제는 Task 6의 `clean_facilities`/`clean_population`이 담당하며, `run_pipeline`은 그 함수들을 호출하도록 아래처럼 구현한다.
+
+```python
+# src/pipeline.py (실제 raw 파일 기준 최종 버전)
+import os
+import pandas as pd
+from src.clean.region_mapper import build_region_lookup
+from src.clean.clean_facilities import clean_facilities
+from src.clean.clean_population import clean_population
+from src.analyze.gap_index import compute_gap_index
+
+def run_pipeline(raw_dir: str, processed_dir: str) -> str:
+    region_lookup = build_region_lookup(os.path.join(raw_dir, "region_codes_raw.csv"))
+    general = pd.read_csv(os.path.join(raw_dir, "ltc_facilities_general.csv"), dtype=str)
+    capacity = pd.read_csv(os.path.join(raw_dir, "ltc_facilities_capacity.csv"), dtype=str)
+    pop_raw = pd.read_csv(
+        os.path.join(raw_dir, "인구총조사_고령인구비율_시도_시_군_구__20260825134933.csv"), dtype=str
+    )
+
+    facilities_df = clean_facilities(general, capacity, region_lookup)
+    population_df = clean_population(pop_raw, region_lookup)
+
+    result = compute_gap_index(facilities_df, population_df)
+
+    output_path = os.path.join(processed_dir, "gap_index.csv")
+    result.to_csv(output_path, index=False)
+    return output_path
+```
+
+  아래 Step 3의 최소 구현(fixture 기반 clean CSV를 직접 읽는 버전)으로 먼저 테스트를 통과시킨 뒤, 이 실제 버전으로 교체한다 — 교체 후에는 `tests/test_pipeline.py`의 fixture도 raw 스키마(`ltc_facilities_general.csv` 등 실제 파일명)에 맞게 다시 써야 한다.
 
 - [ ] **Step 4: 테스트 통과 확인**
 
@@ -395,6 +503,11 @@ git commit -m "feat: assemble end-to-end pipeline producing gap index csv"
 
 ### Task 6: 실데이터 정제 스크립트 — raw → clean 컬럼 매핑 확정
 
+**배경 (2026-08-25 실데이터 확인 결과):**
+- `ltc_facilities_general.csv`의 `시도 시군구 법정동명` 컬럼은 `"서울특별시 종로구 구기동"`처럼 시도·시군구·법정동이 공백으로 이어진 한 문자열이다. 앞의 두 토큰만 잘라내면 시도명·시군구명이 된다.
+- `ltc_facilities_capacity.csv`의 `정원`은 기관유형코드에 따라 의미가 다르다. 입소시설(`A01, A02, A03, A04, A05, AAA`)만 "시설 수용 정원"이고, `B*/C*`(재가서비스: 방문요양·방문목욕 등)는 다른 개념이라 이번 수급 갭 지표에서 제외한다 (사용자 확인 완료).
+- 인구 CSV(`인구총조사_고령인구비율_...csv`)는 헤더가 2줄이라 pandas가 1번째 데이터 행을 헤더 잔재로 잘못 읽는다 — 반드시 skip. 또한 `행정구역별(2)`가 `"소계"`인 행은 시도 전체 합계(시군구 아님)라 제외해야 하는데, 세종특별자치시는 시군구 구분이 없어 소계 행이 곧 유일한 데이터 행이다 — 이 경우만 예외로 유지한다.
+
 **Files:**
 - Create: `src/clean/clean_facilities.py`
 - Create: `src/clean/clean_population.py`
@@ -402,61 +515,180 @@ git commit -m "feat: assemble end-to-end pipeline producing gap index csv"
 - Test: `tests/clean/test_clean_population.py`
 
 **Interfaces:**
-- Consumes: Task 1에서 받은 실제 raw CSV 컬럼명, Task 3의 `build_region_lookup`
-- Produces: `clean_facilities(raw_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame` (컬럼: `region_code`, `capacity`), `clean_population(raw_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame` (컬럼: `region_code`, `elderly_population`)
+- Consumes: Task 3의 `build_region_lookup`, `combine_region_key`
+- Produces:
+  - `INSTITUTIONAL_TYPE_CODES: set[str]` = `{"A01", "A02", "A03", "A04", "A05", "AAA"}`
+  - `extract_sido_sigungu(full_name: str) -> tuple[str, str]` — `"서울특별시 종로구 구기동"` → `("서울특별시", "종로구")`
+  - `clean_facilities(general_df: pd.DataFrame, capacity_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame` (컬럼: `region_code`, `capacity`)
+  - `clean_population(raw_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame` (컬럼: `region_code`, `elderly_population`)
 
-- [ ] **Step 1: `data/raw/ltc_facilities_raw.csv`, `data/raw/elderly_population_raw.csv`를 열어 실제 컬럼명을 확인**
-
-  Run: `python -c "import pandas as pd; print(pd.read_csv('data/raw/ltc_facilities_raw.csv', encoding='cp949', nrows=3))"`
-  실제 지역명 컬럼, 정원 컬럼, 인구 컬럼 이름을 기록해둔다 (아래 테스트의 컬럼명을 여기서 확인한 실제 이름으로 교체할 것)
-
-- [ ] **Step 2: 실패하는 테스트 작성 (Step 1에서 확인한 실제 컬럼명 사용)**
+- [ ] **Step 1: 실패하는 테스트 작성 — `clean_facilities`**
 
 ```python
 # tests/clean/test_clean_facilities.py
 import pandas as pd
-from src.clean.clean_facilities import clean_facilities
+from src.clean.clean_facilities import extract_sido_sigungu, clean_facilities
 
-def test_clean_facilities_maps_region_name_to_code_and_sums_capacity():
-    raw_df = pd.DataFrame(
-        {"시군구명": ["수원시 장안구", "수원시 장안구"], "정원": [30, 20]}
+def test_extract_sido_sigungu_takes_first_two_tokens():
+    assert extract_sido_sigungu("서울특별시 종로구 구기동") == ("서울특별시", "종로구")
+
+def test_clean_facilities_filters_non_institutional_types_and_sums_capacity():
+    general_df = pd.DataFrame(
+        {
+            "장기요양기관코드": ["F1", "F1", "F2"],
+            "시도 시군구 법정동명": [
+                "서울특별시 종로구 구기동",
+                "서울특별시 종로구 구기동",
+                "서울특별시 종로구 평창동",
+            ],
+        }
+    ).drop_duplicates(subset=["장기요양기관코드"])
+    capacity_df = pd.DataFrame(
+        {
+            "장기요양기관코드": ["F1", "F2", "F2"],
+            "기관유형코드": ["A03", "A03", "B01"],
+            "정원": [30, 20, 999],
+        }
     )
-    region_lookup = {"수원시장안구": "41111"}
+    region_lookup = {"서울특별시종로구": "11010"}
 
-    result = clean_facilities(raw_df, region_lookup)
+    result = clean_facilities(general_df, capacity_df, region_lookup)
+    row = result[result["region_code"] == "11010"].iloc[0]
 
-    assert result.loc[0, "region_code"] == "41111"
-    assert result.loc[0, "capacity"] == 50
+    assert row["capacity"] == 50  # B01(재가서비스) 999는 제외되어야 함
 ```
 
-  (컬럼명 `시군구명`, `정원`은 Step 1에서 확인한 실제 raw 컬럼명으로 반드시 교체)
-
-- [ ] **Step 3: 테스트 실패 확인**
+- [ ] **Step 2: 테스트 실패 확인**
 
   Run: `pytest tests/clean/test_clean_facilities.py -v`
   Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 4: 최소 구현 작성 (컬럼명은 Step 1 확인 결과 반영)**
+- [ ] **Step 3: 최소 구현 작성**
 
 ```python
 # src/clean/clean_facilities.py
 import pandas as pd
-from src.clean.region_mapper import normalize_region_name
+from src.clean.region_mapper import combine_region_key
 
-def clean_facilities(raw_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame:
-    df = raw_df.copy()
-    df["region_code"] = df["시군구명"].apply(normalize_region_name).map(region_lookup)
-    df = df.dropna(subset=["region_code"])
-    grouped = df.groupby("region_code")["정원"].sum().reset_index()
+INSTITUTIONAL_TYPE_CODES = {"A01", "A02", "A03", "A04", "A05", "AAA"}
+
+def extract_sido_sigungu(full_name: str) -> tuple[str, str]:
+    tokens = str(full_name).split()
+    return tokens[0], tokens[1]
+
+def clean_facilities(
+    general_df: pd.DataFrame, capacity_df: pd.DataFrame, region_lookup: dict
+) -> pd.DataFrame:
+    general = general_df.drop_duplicates(subset=["장기요양기관코드"]).copy()
+    general[["sido", "sigungu"]] = general["시도 시군구 법정동명"].apply(
+        lambda s: pd.Series(extract_sido_sigungu(s))
+    )
+    general["region_code"] = general.apply(
+        lambda r: region_lookup.get(combine_region_key(r["sido"], r["sigungu"])), axis=1
+    )
+
+    institutional = capacity_df[capacity_df["기관유형코드"].isin(INSTITUTIONAL_TYPE_CODES)].copy()
+    institutional["정원"] = institutional["정원"].astype(int)
+
+    merged = institutional.merge(
+        general[["장기요양기관코드", "region_code"]], on="장기요양기관코드", how="left"
+    )
+    merged = merged.dropna(subset=["region_code"])
+
+    grouped = merged.groupby("region_code")["정원"].sum().reset_index()
     return grouped.rename(columns={"정원": "capacity"})
 ```
 
-- [ ] **Step 5: 테스트 통과 확인 후 `clean_population.py`도 동일한 패턴(Step 2~4)으로 반복 작성**
+- [ ] **Step 4: 테스트 통과 확인**
 
-  Run: `pytest tests/clean/ -v`
-  Expected: 모든 테스트 PASS
+  Run: `pytest tests/clean/test_clean_facilities.py -v`
+  Expected: PASS (2 passed)
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 5: 실패하는 테스트 작성 — `clean_population`**
+
+```python
+# tests/clean/test_clean_population.py
+import pandas as pd
+from src.clean.clean_population import clean_population
+
+def test_clean_population_drops_summary_rows_and_maps_region_code():
+    raw_df = pd.DataFrame(
+        {
+            "행정구역별(1)": ["행정구역별(1)", "전국", "서울특별시", "서울특별시", "세종특별자치시"],
+            "행정구역별(2)": ["행정구역별(2)", "소계", "소계", "종로구", "소계"],
+            "2025.1": ["65세이상인구 (명)", "10722557", "1881288", "29432", "50000"],
+        }
+    )
+    region_lookup = {"서울특별시종로구": "11010", "세종특별자치시세종특별자치시": "36110"}
+
+    result = clean_population(raw_df, region_lookup)
+
+    assert set(result["region_code"]) == {"11010", "36110"}
+    row = result[result["region_code"] == "11010"].iloc[0]
+    assert row["elderly_population"] == 29432
+```
+
+  (세종특별자치시는 시군구 구분이 없어 `combine_region_key(시도명, 시도명)`으로 자기 자신을 시군구처럼 취급 — `build_region_lookup`이 세종을 5자리 코드로 못 찾으면 Task 3 Step 5에서 발견되었을 별도 예외 매핑을 여기서 사용한다)
+
+- [ ] **Step 6: 테스트 실패 확인**
+
+  Run: `pytest tests/clean/test_clean_population.py -v`
+  Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 7: 최소 구현 작성**
+
+```python
+# src/clean/clean_population.py
+import pandas as pd
+from src.clean.region_mapper import combine_region_key
+
+def clean_population(raw_df: pd.DataFrame, region_lookup: dict) -> pd.DataFrame:
+    df = raw_df.iloc[1:].copy()  # 1행은 헤더 잔재라 스킵
+    df = df[
+        (df["행정구역별(2)"] != "소계") | (df["행정구역별(1)"] == "세종특별자치시")
+    ].copy()
+    df["sigungu"] = df.apply(
+        lambda r: r["행정구역별(1)"] if r["행정구역별(1)"] == "세종특별자치시" else r["행정구역별(2)"],
+        axis=1,
+    )
+    df["region_code"] = df.apply(
+        lambda r: region_lookup.get(combine_region_key(r["행정구역별(1)"], r["sigungu"])), axis=1
+    )
+    df = df.dropna(subset=["region_code"])
+    df["elderly_population"] = df["2025.1"].astype(int)
+    return df[["region_code", "elderly_population"]].reset_index(drop=True)
+```
+
+- [ ] **Step 8: 테스트 통과 확인**
+
+  Run: `pytest tests/clean/test_clean_population.py -v`
+  Expected: PASS (1 passed)
+
+- [ ] **Step 9: 실제 raw 파일 전체로 스모크 테스트 — 매칭 안 되는 지역이 있는지 확인**
+
+  Run:
+  ```bash
+  python -c "
+  import pandas as pd
+  from src.clean.region_mapper import build_region_lookup
+  from src.clean.clean_facilities import clean_facilities
+  from src.clean.clean_population import clean_population
+
+  lookup = build_region_lookup('data/raw/region_codes_raw.csv')
+  general = pd.read_csv('data/raw/ltc_facilities_general.csv', dtype=str)
+  capacity = pd.read_csv('data/raw/ltc_facilities_capacity.csv', dtype=str)
+  pop_raw = pd.read_csv('data/raw/인구총조사_고령인구비율_시도_시_군_구__20260825134933.csv', dtype=str)
+
+  fac = clean_facilities(general, capacity, lookup)
+  pop = clean_population(pop_raw, lookup)
+  print('facilities regions matched:', fac.shape)
+  print('population regions matched:', pop.shape)
+  print('population rows with no region_code:', pop_raw.iloc[1:].shape[0] - pop.shape[0])
+  "
+  ```
+  Expected: 두 결과 모두 비어있지 않고, 매칭 안 된 인구 행 수가 0에 가까워야 함 (전남/광주 통합 이슈 등으로 남으면 Global Constraints에 적어둔 리스크대로 원인 확인 후 예외 매핑 추가)
+
+- [ ] **Step 10: 커밋**
 
 ```bash
 git add src/clean/clean_facilities.py src/clean/clean_population.py tests/clean/
